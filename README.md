@@ -3,7 +3,7 @@ Analyze e-stim audio files and create a video of the analysis.
 
 [Example excerpt of video analysis from audio file](https://github.com/astoniab/estimanalyzer/raw/main/media/example1.mp4)
 
-![Single frame from analysis video](https://github.com/astoniab/estimanalyzer/raw/main/media/example1.jpg)
+![Single frame from analysis video](https://github.com/astoniab/estimanalyzer/raw/main/media/example1.png)
 
 ## Example Usage
 `estimanalyzer -i [inputfile] -o [outputfile]`
@@ -26,3 +26,11 @@ Under the column heading is the detected frequency for the input signal during t
 Under the frequency display is a circle that represents the intesity of the signal on this channel at this time.  The larger the circle the more intense the signal.
 
 Under the intensity and between each channel is a horizontal line with another circle.  The size of the circle represents the difference between the channels above and roughly corresponds to how intense the difference is.  The position on the horizontal line roughly corresponds to where the signal will be felt.  Directly between the channels would be ground and directly under the channel would be the positive connection.
+
+## Building
+A CMakeLists.txt file is provided to compile with CMake.
+
+Library Requirements:
+- GD
+- sndfile
+- pffft - [This fork with expanded features](https://github.com/marton78/pffft)
