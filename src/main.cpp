@@ -13,7 +13,7 @@
 #include "dirent.h"
 #endif
 
-#define ESTIMANALYZERVERSION "0.0.1"
+#define ESTIMANALYZERVERSION "0.0.2"
 
 void fftframe(const int64_t channels, const std::vector<double> &data, std::vector<std::vector<std::complex<double>>> &channelfft)
 {
@@ -77,6 +77,8 @@ struct programoptions
 	int64_t videoheight;			// -h
 	std::string fontname;			// -font
 	bool printstatus;
+	gdImagePtr bgimg;				// -bgimg
+	gdImagePtr circ;
 };
 
 struct audiofilemetadata
@@ -173,7 +175,7 @@ void processaudioframe(const programoptions &opts, const audiofilemetadata &md, 
 
 }
 
-void createwaveformfile(const programoptions &opts, const std::string &filename, const int64_t height)
+int createwaveformfile(const programoptions &opts, const std::string &filename, const int64_t height)
 {
 	//http://trac.ffmpeg.org/wiki/FancyFilteringExamples
 	//https://ffmpeg.org/ffmpeg-filters.html#showwaves
@@ -182,14 +184,21 @@ void createwaveformfile(const programoptions &opts, const std::string &filename,
 
 	ffmpegcmd << opts.ffmpeg << " -y -i \"" << opts.filename << "\" -lavfi showwavespic=split_channels=1:s=" << opts.videowidth << "x" << height << " \"" << filename << "\"";
 
-	system(ffmpegcmd.str().c_str());
+	return system(ffmpegcmd.str().c_str());
 }
 
-void createvideofile(const programoptions &opts)
+int createvideofile(const programoptions &opts)
 {
 	//https://hamelot.io/visualization/using-ffmpeg-to-convert-a-set-of-images-into-a-video/
 
 	std::ostringstream ffmpegcmd;
+
+	std::string filename(opts.filename);
+	std::string::size_type lastpos=filename.find_last_of("\\/");
+	if(lastpos!=std::string::npos)
+	{
+		filename=filename.substr(lastpos+1);
+	}
 
 	ffmpegcmd << opts.ffmpeg << " -y -r " << opts.videofps << " -f image2 -s " << opts.videowidth << "x" << opts.videoheight << " -i frames";
 #ifdef _WIN32
@@ -197,9 +206,9 @@ void createvideofile(const programoptions &opts)
 #else
 	ffmpegcmd << "/";
 #endif
-	ffmpegcmd << "frame_%08d.png -i \"" << opts.filename << "\" -vcodec libx264 -crf 25 -pix_fmt yuv420p \"" << opts.outputfile << "\"";
+	ffmpegcmd << "frame_%08d.png -i \"" << opts.filename << "\" -vcodec libx264 -crf 25 -pix_fmt yuv420p -metadata title=\"" << filename << "\" -metadata comment=\"E-Stim Analyzer " << ESTIMANALYZERVERSION << "\" \"" << opts.outputfile << "\"";
 
-	system(ffmpegcmd.str().c_str());
+	return system(ffmpegcmd.str().c_str());
 }
 
 void printtext(gdImagePtr im, const std::string &fontname, const int64_t size, std::string &text, const int64_t x, const int64_t y)
@@ -207,12 +216,24 @@ void printtext(gdImagePtr im, const std::string &fontname, const int64_t size, s
 	gdImageStringFT(im,0,gdTrueColor(0,0,0),fontname.c_str(),size,0,x,y,text.c_str());
 }
 
+void drawantialiasedcircle(const programoptions &opts, gdImagePtr im, const int cx, const int cy, const int size)
+{
+	if(opts.circ)
+	{
+		gdImageCopyResampled(im,opts.circ,cx-(size/2),cy-(size/2),0,0,size,size,opts.circ->sx,opts.circ->sy);
+	}
+}
+
 void writeimageoutput(const programoptions &opts, const audiofilemetadata &md, const std::vector<audiowindowdata> &windowdata)
 {
 	setupframesdirectory();
 
 	_unlink("waveform.png");
-	createwaveformfile(opts,"waveform.png",opts.videoheight-375);
+	if(createwaveformfile(opts,"waveform.png",opts.videoheight-375)!=0)
+	{
+		std::cerr << "Error running ffmpeg.  Make sure the command to start ffmpeg is set correctly.  Current command:" << std::endl << opts.ffmpeg << std::endl;
+		return;
+	}
 	gdImagePtr waveim=gdImageCreateFromFile("waveform.png");
 	if(!waveim)
 	{
@@ -235,6 +256,10 @@ void writeimageoutput(const programoptions &opts, const audiofilemetadata &md, c
 	for(int64_t w=0; w<windowdata.size(); w++)
 	{
 		gdImageFilledRectangle(im,0,0,im->sx,im->sy,white);
+		if(opts.bgimg)
+		{
+			gdImageCopy(im,opts.bgimg,0,0,0,0,std::min(opts.bgimg->sx,im->sx),std::min(opts.bgimg->sy,im->sy));
+		}
 		gdImageCopy(im,waveim,0,im->sy-waveim->sy,0,0,waveim->sx,waveim->sy);
 
 		double currentxpos=static_cast<double>(w+1)/static_cast<double>(windowdata.size())*im->sx;
@@ -246,14 +271,14 @@ void writeimageoutput(const programoptions &opts, const audiofilemetadata &md, c
 			printtext(im,opts.fontname,10,std::to_string(static_cast<int64_t>(windowdata[w].channeldata[c].prominentfrequency))+" Hz",channeloutputxoffset+(c*channeloutputwidth)-25,35);
 
 			int64_t cenergysize=windowdata[w].channeldata[c].averageabsolutesampleenergy*200;
-			gdImageFilledEllipse(im,channeloutputxoffset+(c*channeloutputwidth),150,cenergysize,cenergysize,black);
+			drawantialiasedcircle(opts,im,channeloutputxoffset+(c*channeloutputwidth),150,cenergysize);
 
 			if(c<md.channels-1)
 			{
 				gdImageLine(im,channeloutputxoffset+(c*channeloutputwidth),300,channeloutputxoffset+(c*channeloutputwidth)+channeloutputwidth,300,black);
 				int64_t denergysize=windowdata[w].channeldata[c].channelaveragediffabsolutesampleenergy*100;
 				int64_t xoffset=(windowdata[w].PhaseDiff(c,(c+1)%md.channels)/M_PI)*(channeloutputwidth/2.0);
-				gdImageFilledEllipse(im,(c+1)*channeloutputwidth+xoffset,300,denergysize,denergysize,black);
+				drawantialiasedcircle(opts,im,(c+1)*channeloutputwidth+xoffset,300,denergysize);
 			}
 
 		}
@@ -381,6 +406,21 @@ void printoptions(const programoptions &opts)
 	std::cout << " -w [width]                Width of video" << std::endl;
 	std::cout << " -h [height]               Height of video" << std::endl;
 	std::cout << " -font [font]              Font file name to use" << std::endl;
+	std::cout << " -bgimg [image]            Path to image file to use as video background" << std::endl;
+}
+
+void cleanupoptions(programoptions &opts)
+{
+	if(opts.bgimg)
+	{
+		gdImageDestroy(opts.bgimg);
+		opts.bgimg=nullptr;
+	}
+	if(opts.circ)
+	{
+		gdImageDestroy(opts.circ);
+		opts.circ=nullptr;
+	}
 }
 
 int main(int argc, char *argv[])
@@ -399,6 +439,8 @@ int main(int argc, char *argv[])
 	opts.ffmpeg="ffmpeg";
 #endif
 	opts.printstatus=true;
+	opts.bgimg=nullptr;
+	opts.circ=nullptr;
 
 	for(int a=1; a<argc; )
 	{
@@ -444,17 +486,43 @@ int main(int argc, char *argv[])
 			opts.fontname=std::string(argv[a+1]);
 			a+=2;
 		}
+		else if(arg=="-bgimg" && a<argc && argv[a+1])
+		{
+			opts.bgimg=gdImageCreateFromFile(argv[a+1]);
+			if(!opts.bgimg || (opts.bgimg->sx<=0 || opts.bgimg->sy<=0))
+			{
+				std::cerr << "Unable to load background image" << std::endl;
+				cleanupoptions(opts);
+				return 1;
+			}
+			a+=2;
+		}
 		else if(arg=="-?")
 		{
 			printoptions(opts);
+			cleanupoptions(opts);
 			return 0;
 		}
 		else
 		{
 			std::cerr << "Unknown argument " << arg;
+			cleanupoptions(opts);
 			return 1;
 		}
 	}
 
+	opts.circ=gdImageCreateTrueColor(401,401);
+	if(opts.circ)
+	{
+		gdImageAlphaBlending(opts.circ,0);
+		gdImageFilledRectangle(opts.circ,0,0,opts.circ->sx,opts.circ->sy,gdTrueColorAlpha(255,0,255,127));
+		gdImageAlphaBlending(opts.circ,1);
+		gdImageSaveAlpha(opts.circ,1);
+		gdImageFilledEllipse(opts.circ,opts.circ->sx/2,opts.circ->sy/2,opts.circ->sx,opts.circ->sy,gdTrueColor(0,0,0));
+	}
+
 	processfile(opts);
+
+	cleanupoptions(opts);
+
 }
